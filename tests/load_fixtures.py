@@ -1,3 +1,4 @@
+import datetime
 import json
 
 
@@ -51,7 +52,7 @@ class LoadFixture:
 
         self.data = json.loads(open(filename, 'r').read())
 
-        await con.execute("truncate " + self.table)
+        await con.execute("TRUNCATE {} CASCADE".format(self.table))
 
         for row in self.data:
             field_names = []
@@ -70,4 +71,7 @@ class LoadFixture:
             )
             stmt = await con.prepare(sql)
 
+            if 'approved_date' in row.keys():
+                row['approved_date'] = datetime.datetime.fromtimestamp(row['approved_date'])
+                row['closing_date'] = datetime.datetime.fromtimestamp(row['closing_date'])
             await stmt.fetch(*row.values())

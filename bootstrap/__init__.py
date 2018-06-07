@@ -1,67 +1,15 @@
 import asyncio
 import logging
 import uvloop
-import importlib
 
 from aiohttp import web
 
-from aiohttp_boilerplate.config import load_config
-from aiohttp_boilerplate import dbpool as db
+from aiohttp_boilerplate import config
+from aiohttp_boilerplate.dbpool import pg as db
+from .console_app import start_console_app
+from .web_app import start_web_app
 
-
-async def on_cleanup(app):
-    # await app.db_pool.release(app.db)
-    # await app.db_pool.terminate()
-    await app.db_pool.close()
-
-
-def start_console_app(loop=None):
-    # load config from yaml file in current dir
-
-    if loop is None:
-        loop = get_loop()
-
-    class FakeApp:
-        conf = {}
-
-    # setup application and extensions
-    app = FakeApp()
-    app.conf = loop.run_until_complete(load_config())
-
-    # Creates DB POOL connection
-    db_pool = loop.run_until_complete(db.create_pool(loop=loop))
-    db.DB_POOL = db_pool
-    app.DB_POOL = db_pool
-
-    return loop, app, db_pool
-
-
-async def start_web_app(loop):
-
-    middlewares = []
-    conf = await load_config()
-
-    if conf.get('middlewares'):
-        for middleware in conf['middlewares']:
-            p, m = middleware.rsplit('.', 1)
-            mod = importlib.import_module(p)
-            met = getattr(mod, m)
-            middlewares.append(met)
-
-    # setup application and extensions
-    app = web.Application(loop=loop, middlewares=middlewares)
-    app.conf = conf
-
-    # !!! WILL CREATE DATABASE POOL !!!
-    app.db_pool = await db.create_pool(loop=loop)
-    db.DB_POOL = app.db_pool
-
-    app.on_cleanup.append(on_cleanup)
-
-    from app.routes import setup_routes
-    setup_routes(app)
-
-    return app, db.DB_POOL, app.conf
+__all__ = ('web_app', 'console_app', 'get_loop', )
 
 
 def get_loop():
@@ -73,11 +21,23 @@ def get_loop():
     return loop
 
 
-def main():
+def console_app():
     loop = get_loop()
-    app, db_pool, config = loop.run_until_complete(start_web_app(loop))
-    web.run_app(app, host=config['host'], port=config['port'])
+    conf = loop.run_until_complete(config.load_config(loop=loop))
+    db_pool = loop.run_until_complete(db.create_pool(
+        loop=loop,
+        conf=conf['postgres']
+    ))
+    console_app = start_console_app(conf, db_pool, loop)
+    return console_app
 
 
-if __name__ == '__main__':
-    main()
+def web_app():
+    loop = get_loop()
+    conf = loop.run_until_complete(config.load_config(loop=loop))
+    db_pool = loop.run_until_complete(db.create_pool(
+        conf=conf['postgres'],
+        loop=loop,
+    ))
+    web_app = start_web_app(conf, db_pool, loop)
+    web.run_app(web_app, host=conf['host'], port=conf['port'])

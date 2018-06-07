@@ -3,6 +3,7 @@ import warnings
 
 from aiohttp import web
 
+from . import fixed_dump
 from .exceptions import JSONHTTPError
 
 
@@ -15,25 +16,32 @@ class OptionsView(web.View):
 
     def __init__(self, request):
         super().__init__(request)
-        self.request_raw_data = None
+        self.request_data = None
 
     # On start will always run before any other methods
     async def on_start(self):
         pass
 
-    # Read data from request and save in request_raw_data
+    # Read data from request and save in request_data
     async def get_request_data(self, to_json=False):
-        if self.request_raw_data is None:
-            self.request_raw_data = await self.request.text()
-        if to_json is True:
-            json.loads(self.request_raw_data)
+        if self.request_data is None:
+            self.request_data = await self.request.text()
 
-        return self.request_raw_data
+        if to_json is True:
+            self.request_data = json.loads(self.request_data)
+
+        return self.request_data
 
     # Will return options request with fields meta data
     async def options(self):
-
         return web.json_response(self._fields(self.schema()) if self.schema else {})
+
+    def json_response(self, data, status=200):
+        return web.json_response(
+            data,
+            dumps=fixed_dump,
+            status=status,
+        )
 
 
 # Options request with a schema data
@@ -49,9 +57,45 @@ class SchemaOptionsView(OptionsView):
         warnings.warn('Redefine get_schema in inherited class', RuntimeWarning)
         return None
 
+    async def get_schema_data(self, partial=False, schema=None):
+
+        if schema is None:
+            schema = self.schema
+
+        data = await self.get_request_data()
+        if not data:
+            raise JSONHTTPError({'error': 'Empty data'})
+
+        try:
+            schema_result = schema().loads(data, partial=partial)
+        except Exception as e:
+            '''
+            ToDo
+            Create logging facility
+
+            raise web.HTTPBadRequest(
+                text=json.dumps(_non_field_errors(
+                    traceback.format_exc(3, 100))),
+                headers={
+                    'Access-Control-Allow-Origin': '*',
+                    'Access-Control-Allow-Headers':
+                    'Authorization, X-PINGOTHER, Content-Type, X-Requested-With'
+                },
+                content_type='application/json')
+            '''
+            raise JSONHTTPError({'error': str(e)})
+
+        if len(schema_result.errors):
+            raise JSONHTTPError(schema_result.errors)
+
+        return schema_result.data
+
     # Will return options request with validation data for a frontend
     def _getValidation(self, field):
         rules = {}
+
+        if getattr(field, 'get_validation', None):
+            return field.get_validation()
 
         if field.validate:
             for v in field.validate:
@@ -80,7 +124,11 @@ class SchemaOptionsView(OptionsView):
                     if v.max:
                         rules['max'] = v.max
                 else:
-                    rules['_' + rules_name] = rules_name
+                    rules[rules_name.lower()] = rules_name
+
+        if field.required:
+            rules['required'] = field.required
+
         return rules
 
     # Return fields information and validation data
@@ -90,13 +138,11 @@ class SchemaOptionsView(OptionsView):
             name: {
                 'type': field.__class__.__name__.lower(),
                 'many': field.many,
-                'required': field.required,
                 'schema': self._fields(field.schema),
             } if field.__class__.__name__.lower() == 'nested'
             else {
                 'type': field.__class__.__name__.lower(),
                 'validate': self._getValidation(field),
-                'required': field.required
             } for name, field in schema.fields.items()}
 
     # Check if schema have NestedJoin Fields
@@ -120,7 +166,7 @@ class SchemaOptionsView(OptionsView):
         if hasattr(self, 'objects'):
             sql = self.objects.sql
 
-        sql.table = self.model.__table__ + """ as t0 """
+        sql.table = self.obj.__table__ + """ as t0 """
         if self.schema:
             schema = self.schema()
             for name, field in sorted(schema.fields.items()):
@@ -179,7 +225,7 @@ class ObjectView(SchemaOptionsView):
         super().__init__(request)
 
         self.id = None
-        self.obj = self.get_model()
+        self.obj = self.get_model()()
 
     # Return model object
     def get_model(self):
@@ -202,14 +248,17 @@ class ObjectView(SchemaOptionsView):
         return id
 
     # Return context for and object
-    async def get_data(self, raw_data):
+    async def get_data(self, obj):
 
         data = {}
         if self.schema:
             # ToDo
             # User schema loads
+            # ToDo
+            # Keep data in the bytes
+            # data = self.schema().dump(raw_data)
             for f in self.schema().fields:
-                data[f] = raw_data.get(f)
+                data[f] = getattr(obj, f)
         else:
             data = self.obj.data
 
